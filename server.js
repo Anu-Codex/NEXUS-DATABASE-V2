@@ -13,6 +13,30 @@ mongoose.connect(process.env.MONGO_URI);
 
 // --- INITIALIZE AI ---
 const mistral = new MistralClient(process.env.MISTRAL_API_KEY);
+const { exec } = require('child_process');
+const os = require('os');
+
+app.get('/api/system/stats', (req, res) => {
+    exec('df -h .', (err, stdout) => {
+        let diskData = { total: "N/A", used: "N/A", free: "N/A", percent: "0" };
+        if (!err) {
+            const lines = stdout.split('\n');
+            const stats = lines[1].replace(/\s+/g, ' ').split(' ');
+            diskData = { total: stats[1], used: stats[2], free: stats[3], percent: stats[4].replace('%', '') };
+        }
+        res.json({
+            success: true,
+            ram: {
+                total: (os.totalmem() / (1024 ** 3)).toFixed(2) + " GB",
+                used: ((os.totalmem() - os.freemem()) / (1024 ** 3)).toFixed(2) + " GB",
+                free: (os.freemem() / (1024 ** 3)).toFixed(2) + " GB",
+                percent: (((os.totalmem() - os.freemem()) / os.totalmem()) * 100).toFixed(1)
+            },
+            disk: diskData,
+            server: { region: process.env.RENDER_REGION || "USA (East)", uptime: Math.floor(process.uptime()) }
+        });
+    });
+});
 
 // --- IMPORT PLAYER SCHEMA (Must match Node-01 exactly) ---
 const PlayerSchema = new mongoose.Schema({
