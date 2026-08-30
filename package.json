@@ -1,0 +1,27 @@
+{
+  "name": "nexus-legends-backend",
+  "version": "7.2.0",
+  "description": "High-performance eSports Management System for Nexus Legends",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "@mistralai/mistralai": "^0.5.0",
+    "axios": "^1.6.0",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "mongoose": "^7.5.2",
+    "sib-api-v3-sdk": "^8.5.0",
+    "socket.io": "^4.7.2",
+    "groq-sdk": "^0.5.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "author": "Anubhav (Nexus Dev)",
+  "license": "MIT"
+}
