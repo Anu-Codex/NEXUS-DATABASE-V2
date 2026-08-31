@@ -116,6 +116,28 @@ app.delete('/api/media/:id', async (req, res) => {
     await Video.findByIdAndDelete(req.params.id);
     res.json({ success: true });
 });
+// --- ANNOUNCEMENT SCHEMA ---
+const AnnSchema = new mongoose.Schema({
+    message: { type: String, required: true },
+    timestamp: { type: Date, default: Date.now }
+});
+const Announcement = mongoose.model('Announcement', AnnSchema);
+
+// POST Announcement (Dashboard)
+app.post('/api/announcements', async (req, res) => {
+    try {
+        const newAnn = new Announcement(req.body);
+        await newAnn.save();
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET Latest Announcements (Index)
+app.get('/api/announcements', async (req, res) => {
+    const list = await Announcement.find().sort({ timestamp: -1 }).limit(5);
+    res.json(list);
+});
+
 
 const PORT = process.env.PORT || 5001;
 app.listen(PORT, () => console.log(`Auxiliary AI Node running on ${PORT}`));
