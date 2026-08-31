@@ -89,6 +89,33 @@ app.get('/api/stats', async (req, res) => {
 });
 
 app.get('/test', (req, res) => res.json({ status: "Auxiliary Node Online", node: 2 }));
+// --- VIDEO SCHEMA ---
+const VideoSchema = new mongoose.Schema({
+    title: String,
+    youtubeUrl: String,
+    category: { type: String, default: "Tournament" }, // Highlights, Tutorials, Live
+    createdAt: { type: Date, default: Date.now }
+});
+const Video = mongoose.model('Video', VideoSchema);
+
+// --- API ROUTES ---
+app.post('/api/media/add', async (req, res) => {
+    try {
+        const video = new Video(req.body);
+        await video.save();
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/media/all', async (req, res) => {
+    const videos = await Video.find().sort({ createdAt: -1 });
+    res.json(videos);
+});
+
+app.delete('/api/media/:id', async (req, res) => {
+    await Video.findByIdAndDelete(req.params.id);
+    res.json({ success: true });
+});
 
 const PORT = process.env.PORT || 5001;
 app.listen(PORT, () => console.log(`Auxiliary AI Node running on ${PORT}`));
