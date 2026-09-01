@@ -149,6 +149,7 @@ const TournamentSchema = new mongoose.Schema({
 const StandingSchema = new mongoose.Schema({
     tourId: { type: mongoose.Schema.Types.ObjectId, ref: 'DuoTournament' },
     participant: String,
+    group: { type: String, default: "Group A" },
     played: { type: Number, default: 0 },
     wins: { type: Number, default: 0 },
     draws: { type: Number, default: 0 },
@@ -166,6 +167,7 @@ const fixtureSchema = new mongoose.Schema({
     scoreA: { type: Number, default: 0 },
     scoreB: { type: Number, default: 0 },
     status: { type: String, default: "Upcoming" },
+    stage: { type: String, default: "Group Stage" },
     type: { type: String, default: "League" }, // League or Knockout
     createdAt: { type: Date, default: Date.now }
 });
@@ -186,15 +188,15 @@ app.post('/api/duo/create-tour', async (req, res) => {
 // Add Duo Fixture (Manual Names)
 app.post('/api/duo/create-fixture', async (req, res) => {
     try {
-        const { tourId, playerA, playerB, type } = req.body;
-        const fixture = await DuoFixture.create({ tourId, playerA, playerB, type: type || 'League' });
+        const { tourId, playerA, playerB, stage, group } = req.body;
+        const fixture = await DuoFixture.create({ tourId, playerA, playerB, stage, group });
 
-        // Auto-initialize Standings for manual names if they don't exist
         const names = [playerA, playerB];
         for (let name of names) {
+            // This finds the team in the table for THAT specific group
             await DuoStanding.findOneAndUpdate(
-                { tourId, participant: name },
-                { tourId, participant: name },
+                { tourId, participant: name, group: group }, 
+                { tourId, participant: name, group: group },
                 { upsert: true }
             );
         }
