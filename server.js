@@ -158,6 +158,13 @@ const StandingSchema = new mongoose.Schema({
     ga: { type: Number, default: 0 },
     points: { type: Number, default: 0 }
 });
+const DuoRankSchema = new mongoose.Schema({
+    tourId: String,
+    category: String,
+    playerName: String,
+    totalValue: { type: Number, default: 0 }
+});
+const DuoRank = mongoose.model('DuoRank', DuoRankSchema);
 
 // 3. Define the Fixture Structure (for Duo matches)
 const fixtureSchema = new mongoose.Schema({
@@ -204,38 +211,66 @@ app.post('/api/duo/create-fixture', async (req, res) => {
     } catch (err) { res.status(500).json(err); }
 });
 
-// Update Duo Score (ONLY updates Duo Table/Rank - NO BDR/MV logic)
+// --- DUO MODELS (Ensure these are defined at the top) ---
+
+
+// --- DUO ROUTES with CRASH PROTECTION ---
+
+app.get('/api/duo/tournaments', async (req, res) => {
+    try {
+        const tours = await DuoTournament.find().sort({ createdAt: -1 });
+        res.json(tours);
+    } catch (err) { res.status(500).json([]); }
+});
+
+app.get('/api/duo/fixtures/:tourId', async (req, res) => {
+    try {
+        const matches = await DuoFixture.find({ tourId: req.params.tourId });
+        res.json(matches);
+    } catch (err) { res.status(500).json([]); }
+});
+
+app.get('/api/duo/standings/:tourId', async (req, res) => {
+    try {
+        const data = await DuoStanding.find({ tourId: req.params.tourId });
+        res.json(data);
+    } catch (err) { res.status(500).json([]); }
+});
+
+app.get('/api/duo/boot/:tourId', async (req, res) => {
+    try {
+        // Fix: Ensure we filter by tourId and category
+        const data = await DuoRank.find({ tourId: req.params.tourId, category: 'boot' });
+        res.json(data);
+    } catch (err) { res.status(500).json([]); }
+});
+
+// Update Duo Score (Triggers Golden Boot update)
 app.put('/api/duo/update-score/:id', async (req, res) => {
     try {
         const { scoreA, scoreB } = req.body;
         const fix = await DuoFixture.findByIdAndUpdate(req.params.id, { scoreA, scoreB, status: "Completed" });
+        if (!fix) return res.status(404).json({ error: "Match not found" });
 
-        const updateDuoStats = async (pName, myS, oppS) => {
+        const updateStats = async (name, myS, oppS) => {
             const pts = myS > oppS ? 3 : (myS === oppS ? 1 : 0);
-            // Update Table
             await DuoStanding.findOneAndUpdate(
-                { tourId: fix.tourId, participant: pName },
-                { $inc: { played: 1, wins: myS > oppS ? 1 : 0, draws: myS === oppS ? 1 : 0, losses: myS < oppS ? 1 : 0, gf: myS, ga: oppS, points: pts } }
+                { tourId: fix.tourId, participant: name, group: fix.group },
+                { $inc: { played: 1, wins: myS > oppS ? 1 : 0, draws: myS === oppS ? 1 : 0, losses: myS < oppS ? 1 : 0, gf: myS, ga: oppS, points: pts } },
+                { upsert: true }
             );
-            // Update Duo Golden Boot
+            // Update Golden Boot (Team Goals)
             await DuoRank.findOneAndUpdate(
-                { tourId: fix.tourId, category: "boot", playerName: pName },
+                { tourId: fix.tourId.toString(), category: "boot", playerName: name },
                 { $inc: { totalValue: myS } },
                 { upsert: true }
             );
         };
-
-        await updateDuoStats(fix.playerA, scoreA, scoreB);
-        await updateDuoStats(fix.playerB, scoreB, scoreA);
+        await updateStats(fix.playerA, scoreA, scoreB);
+        await updateStats(fix.playerB, scoreB, scoreA);
         res.json({ success: true });
-    } catch (err) { res.status(500).json(err); }
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
-
-// Fetching Routes
-app.get('/api/duo/tournaments', async (req, res) => res.json(await DuoTournament.find().sort({createdAt: -1})));
-app.get('/api/duo/standings/:tourId', async (req, res) => res.json(await DuoStanding.find({tourId: req.params.tourId})));
-app.get('/api/duo/fixtures/:tourId', async (req, res) => res.json(await DuoFixture.find({tourId: req.params.tourId})));
-app.get('/api/duo/boot/:tourId', async (req, res) => res.json(await DuoRank.find({tourId: req.params.tourId, category: 'boot'})));
 
 
 const PORT = process.env.PORT || 5001;
