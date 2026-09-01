@@ -137,13 +137,43 @@ app.get('/api/announcements', async (req, res) => {
     const list = await Announcement.find().sort({ timestamp: -1 }).limit(5);
     res.json(list);
 });
-// --- 1. DUO MODELS (Isolated Collections) ---
+// 1. Define the Tournament Structure for this new server
+const TournamentSchema = new mongoose.Schema({
+    type: { type: String, default: 'duo' },
+    name: String,
+    participants: [String],
+    createdAt: { type: Date, default: Date.now }
+});
+
+// 2. Define the Standings Structure (for the Duo points table)
+const StandingSchema = new mongoose.Schema({
+    tourId: { type: mongoose.Schema.Types.ObjectId, ref: 'DuoTournament' },
+    participant: String,
+    played: { type: Number, default: 0 },
+    wins: { type: Number, default: 0 },
+    draws: { type: Number, default: 0 },
+    losses: { type: Number, default: 0 },
+    gf: { type: Number, default: 0 },
+    ga: { type: Number, default: 0 },
+    points: { type: Number, default: 0 }
+});
+
+// 3. Define the Fixture Structure (for Duo matches)
+const fixtureSchema = new mongoose.Schema({
+    tourId: { type: mongoose.Schema.Types.ObjectId, ref: 'DuoTournament' },
+    playerA: String,
+    playerB: String,
+    scoreA: { type: Number, default: 0 },
+    scoreB: { type: Number, default: 0 },
+    status: { type: String, default: "Upcoming" },
+    type: { type: String, default: "League" }, // League or Knockout
+    createdAt: { type: Date, default: Date.now }
+});
+
+// 4. NOW you can define your models without errors
 const DuoTournament = mongoose.model('DuoTournament', TournamentSchema);
 const DuoStanding = mongoose.model('DuoStanding', StandingSchema);
 const DuoFixture = mongoose.model('DuoFixture', fixtureSchema);
-const DuoRank = mongoose.model('DuoRank', TournamentRankSchema);
-
-// --- 2. DUO ROUTES ---
 
 // Create Duo Tour
 app.post('/api/duo/create-tour', async (req, res) => {
