@@ -137,6 +137,73 @@ app.get('/api/announcements', async (req, res) => {
     const list = await Announcement.find().sort({ timestamp: -1 }).limit(5);
     res.json(list);
 });
+// --- 1. DUO MODELS (Isolated Collections) ---
+const DuoTournament = mongoose.model('DuoTournament', TournamentSchema);
+const DuoStanding = mongoose.model('DuoStanding', StandingSchema);
+const DuoFixture = mongoose.model('DuoFixture', fixtureSchema);
+const DuoRank = mongoose.model('DuoRank', TournamentRankSchema);
+
+// --- 2. DUO ROUTES ---
+
+// Create Duo Tour
+app.post('/api/duo/create-tour', async (req, res) => {
+    try {
+        const tour = await DuoTournament.create({ ...req.body, type: 'duo' });
+        res.json({ success: true, tour });
+    } catch (err) { res.status(500).json(err); }
+});
+
+// Add Duo Fixture (Manual Names)
+app.post('/api/duo/create-fixture', async (req, res) => {
+    try {
+        const { tourId, playerA, playerB, type } = req.body;
+        const fixture = await DuoFixture.create({ tourId, playerA, playerB, type: type || 'League' });
+
+        // Auto-initialize Standings for manual names if they don't exist
+        const names = [playerA, playerB];
+        for (let name of names) {
+            await DuoStanding.findOneAndUpdate(
+                { tourId, participant: name },
+                { tourId, participant: name },
+                { upsert: true }
+            );
+        }
+        res.json({ success: true });
+    } catch (err) { res.status(500).json(err); }
+});
+
+// Update Duo Score (ONLY updates Duo Table/Rank - NO BDR/MV logic)
+app.put('/api/duo/update-score/:id', async (req, res) => {
+    try {
+        const { scoreA, scoreB } = req.body;
+        const fix = await DuoFixture.findByIdAndUpdate(req.params.id, { scoreA, scoreB, status: "Completed" });
+
+        const updateDuoStats = async (pName, myS, oppS) => {
+            const pts = myS > oppS ? 3 : (myS === oppS ? 1 : 0);
+            // Update Table
+            await DuoStanding.findOneAndUpdate(
+                { tourId: fix.tourId, participant: pName },
+                { $inc: { played: 1, wins: myS > oppS ? 1 : 0, draws: myS === oppS ? 1 : 0, losses: myS < oppS ? 1 : 0, gf: myS, ga: oppS, points: pts } }
+            );
+            // Update Duo Golden Boot
+            await DuoRank.findOneAndUpdate(
+                { tourId: fix.tourId, category: "boot", playerName: pName },
+                { $inc: { totalValue: myS } },
+                { upsert: true }
+            );
+        };
+
+        await updateDuoStats(fix.playerA, scoreA, scoreB);
+        await updateDuoStats(fix.playerB, scoreB, scoreA);
+        res.json({ success: true });
+    } catch (err) { res.status(500).json(err); }
+});
+
+// Fetching Routes
+app.get('/api/duo/tournaments', async (req, res) => res.json(await DuoTournament.find().sort({createdAt: -1})));
+app.get('/api/duo/standings/:tourId', async (req, res) => res.json(await DuoStanding.find({tourId: req.params.tourId})));
+app.get('/api/duo/fixtures/:tourId', async (req, res) => res.json(await DuoFixture.find({tourId: req.params.tourId})));
+app.get('/api/duo/boot/:tourId', async (req, res) => res.json(await DuoRank.find({tourId: req.params.tourId, category: 'boot'})));
 
 
 const PORT = process.env.PORT || 5001;
