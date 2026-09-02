@@ -245,31 +245,24 @@ app.get('/api/duo/boot/:tourId', async (req, res) => {
     } catch (err) { res.status(500).json([]); }
 });
 
-// Update Duo Score (Triggers Golden Boot update)
+// UPDATE DUO MATCH (Scores + Group + Stage)
 app.put('/api/duo/update-score/:id', async (req, res) => {
     try {
-        const { scoreA, scoreB } = req.body;
-        const fix = await DuoFixture.findByIdAndUpdate(req.params.id, { scoreA, scoreB, status: "Completed" });
-        if (!fix) return res.status(404).json({ error: "Match not found" });
+        const { scoreA, scoreB, group, stage } = req.body;
+        
+        // This updates the fixture in the database
+        await DuoFixture.findByIdAndUpdate(req.params.id, { 
+            scoreA, 
+            scoreB, 
+            group, 
+            stage,
+            status: "Completed" // Mark as completed so Sync can find it
+        });
 
-        const updateStats = async (name, myS, oppS) => {
-            const pts = myS > oppS ? 3 : (myS === oppS ? 1 : 0);
-            await DuoStanding.findOneAndUpdate(
-                { tourId: fix.tourId, participant: name, group: fix.group },
-                { $inc: { played: 1, wins: myS > oppS ? 1 : 0, draws: myS === oppS ? 1 : 0, losses: myS < oppS ? 1 : 0, gf: myS, ga: oppS, points: pts } },
-                { upsert: true }
-            );
-            // Update Golden Boot (Team Goals)
-            await DuoRank.findOneAndUpdate(
-                { tourId: fix.tourId.toString(), category: "boot", playerName: name },
-                { $inc: { totalValue: myS } },
-                { upsert: true }
-            );
-        };
-        await updateStats(fix.playerA, scoreA, scoreB);
-        await updateStats(fix.playerB, scoreB, scoreA);
-        res.json({ success: true });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+        res.json({ success: true, message: "Match details updated!" });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 // DELETE DUO FIXTURE
 app.delete('/api/duo/fixture/:id', async (req, res) => {
