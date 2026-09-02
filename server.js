@@ -282,72 +282,53 @@ app.delete('/api/duo/fixture/:id', async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
-// HYBRID RECOVERY: Show teams even if matches are unplayed (Upcoming)
+// FINAL HYBRID RECOVERY - GROUP STRICT VERSION
 app.get('/api/duo/recalculate/:tourId', async (req, res) => {
     try {
         const { tourId } = req.params;
 
-        // 1. TOTAL WIPE: Clean the broken table
+        // 1. WIPE current standings
         await DuoStanding.deleteMany({ tourId: tourId });
 
-        // 2. FETCH EVERY FIXTURE (Upcoming + Completed)
+        // 2. FETCH FIXTURES
         const allFixtures = await DuoFixture.find({ tourId: tourId });
 
-        if (allFixtures.length === 0) {
-            return res.json({ success: false, error: "No fixtures found to build a table from." });
-        }
+        if (allFixtures.length === 0) return res.json({ success: false, error: "No matches found." });
 
-        // 3. INITIALIZE TEAMS: Make sure every team in the fixtures appears in the table with 0s
+        // 3. INITIALIZE STANDINGS FROM FIXTURE DATA
         for (let m of allFixtures) {
-            const teamsInMatch = [
-                { name: m.playerA, group: m.group },
-                { name: m.playerB, group: m.group }
-            ];
+            // CRITICAL: We take the group directly from what was saved in the match
+            const matchGroup = m.group || "UNASSIGNED"; 
 
-            for (let t of teamsInMatch) {
-                // This "upsert" ensures the team exists in the table for their group
+            const teams = [m.playerA, m.playerB];
+            for (let tName of teams) {
                 await DuoStanding.findOneAndUpdate(
-                    { tourId: tourId, participant: t.name, group: t.group || "Group A" },
-                    { tourId: tourId, participant: t.name, group: t.group || "Group A" }, 
+                    { tourId: tourId, participant: tName, group: matchGroup },
+                    { tourId: tourId, participant: tName, group: matchGroup },
                     { upsert: true, new: true }
                 );
             }
         }
 
-        // 4. CALCULATE COMPLETED MATCHES: Now add points for the ones actually played
-        const completedMatches = allFixtures.filter(m => m.status === "Completed");
-
-        for (let m of completedMatches) {
-            const updateLogic = async (pName, myG, oppG) => {
-                const isWin = myG > oppG ? 1 : 0;
-                const isDraw = myG === oppG ? 1 : 0;
-                const isLoss = myG < oppG ? 1 : 0;
+        // 4. ADD POINTS FOR COMPLETED MATCHES
+        const completed = allFixtures.filter(m => m.status === "Completed");
+        for (let m of completed) {
+            const updateStats = async (pName, g1, g2) => {
+                const isWin = g1 > g2 ? 1 : 0;
+                const isDraw = g1 === g2 ? 1 : 0;
                 const pts = (isWin * 3) + (isDraw * 1);
 
                 await DuoStanding.findOneAndUpdate(
-                    { tourId: tourId, participant: pName, group: m.group },
-                    { 
-                        $inc: { 
-                            played: 1, wins: isWin, draws: isDraw, losses: isLoss, 
-                            gf: myG, ga: oppG, points: pts 
-                        } 
-                    }
+                    { tourId: tourId, participant: pName, group: m.group || "UNASSIGNED" },
+                    { $inc: { played: 1, wins: isWin, draws: isDraw, losses: (g1 < g2 ? 1 : 0), gf: g1, ga: g2, points: pts } }
                 );
             };
-
-            await updateLogic(m.playerA, m.scoreA, m.scoreB);
-            await updateLogic(m.playerB, m.scoreB, m.scoreA);
+            await updateStats(m.playerA, m.scoreA, m.scoreB);
+            await updateStats(m.playerB, m.scoreB, m.scoreA);
         }
 
-        res.json({ 
-            success: true, 
-            message: `Table Rebuilt! Found ${allFixtures.length} total teams across groups.` 
-        });
-
-    } catch (err) {
-        console.error("Hybrid Recovery Error:", err);
-        res.status(500).json({ success: false, error: err.message });
-    }
+        res.json({ success: true, message: "Sync Complete. Check if 'UNASSIGNED' group appeared." });
+    } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 const PORT = process.env.PORT || 5001;
