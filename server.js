@@ -282,6 +282,46 @@ app.delete('/api/duo/fixture/:id', async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
+// RECALCULATE DUO POINTS TABLE FROM HISTORY
+app.get('/api/duo/recalculate/:tourId', async (req, res) => {
+    try {
+        const { tourId } = req.params;
+
+        // 1. Reset all standings for this tournament to 0
+        await DuoStanding.updateMany({ tourId }, { 
+            played: 0, wins: 0, draws: 0, losses: 0, gf: 0, ga: 0, points: 0 
+        });
+
+        // 2. Get all COMPLETED matches for this tournament
+        const matches = await DuoFixture.find({ tourId, status: "Completed" });
+
+        // 3. Loop through matches and re-apply points
+        for (let m of matches) {
+            const updateStats = async (name, myS, oppS, groupName) => {
+                const isWin = myS > oppS ? 1 : 0;
+                const isDraw = myS === oppS ? 1 : 0;
+                const isLoss = myS < oppS ? 1 : 0;
+                const pts = isWin ? 3 : (isDraw ? 1 : 0);
+
+                await DuoStanding.findOneAndUpdate(
+                    { tourId, participant: name, group: groupName },
+                    { $inc: { 
+                        played: 1, wins: isWin, draws: isDraw, losses: isLoss, 
+                        gf: myS, ga: oppS, points: pts 
+                    }},
+                    { upsert: true }
+                );
+            };
+
+            await updateStats(m.playerA, m.scoreA, m.scoreB, m.group);
+            await updateStats(m.playerB, m.scoreB, m.scoreA, m.group);
+        }
+
+        res.json({ success: true, message: "Duo Table recalculated from match history!" });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
 
 
 const PORT = process.env.PORT || 5001;
