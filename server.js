@@ -282,54 +282,73 @@ app.delete('/api/duo/fixture/:id', async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
-// RECALCULATE DUO TABLE (Strict Group-Wise Rebuild)
+// HYBRID RECOVERY: Show teams even if matches are unplayed (Upcoming)
 app.get('/api/duo/recalculate/:tourId', async (req, res) => {
     try {
         const { tourId } = req.params;
 
-        // 1. TOTAL RESET: Delete all existing standings for this specific tournament
-        // This is the only way to remove "stuck" points from deleted matches
+        // 1. TOTAL WIPE: Clean the broken table
         await DuoStanding.deleteMany({ tourId: tourId });
 
-        // 2. FETCH HISTORY: Get all COMPLETED matches
-        const matches = await DuoFixture.find({ tourId: tourId, status: "Completed" });
+        // 2. FETCH EVERY FIXTURE (Upcoming + Completed)
+        const allFixtures = await DuoFixture.find({ tourId: tourId });
 
-        if (matches.length === 0) {
-            return res.json({ success: true, message: "Standings reset to 0 (No matches found)." });
+        if (allFixtures.length === 0) {
+            return res.json({ success: false, error: "No fixtures found to build a table from." });
         }
 
-        // 3. REBUILD LOOP
-        for (let m of matches) {
-            const processTeams = async (name, myGoals, oppGoals) => {
-                const isWin = myGoals > oppGoals ? 1 : 0;
-                const isDraw = myGoals === oppGoals ? 1 : 0;
-                const isLoss = myGoals < oppGoals ? 1 : 0;
-                const pts = isWin ? 3 : (isDraw ? 1 : 0);
+        // 3. INITIALIZE TEAMS: Make sure every team in the fixtures appears in the table with 0s
+        for (let m of allFixtures) {
+            const teamsInMatch = [
+                { name: m.playerA, group: m.group },
+                { name: m.playerB, group: m.group }
+            ];
 
-                // Re-insert into Standings with correct Group from the match data
+            for (let t of teamsInMatch) {
+                // This "upsert" ensures the team exists in the table for their group
                 await DuoStanding.findOneAndUpdate(
-                    { tourId: tourId, participant: name, group: m.group || "Group A" },
+                    { tourId: tourId, participant: t.name, group: t.group || "Group A" },
+                    { tourId: tourId, participant: t.name, group: t.group || "Group A" }, 
+                    { upsert: true, new: true }
+                );
+            }
+        }
+
+        // 4. CALCULATE COMPLETED MATCHES: Now add points for the ones actually played
+        const completedMatches = allFixtures.filter(m => m.status === "Completed");
+
+        for (let m of completedMatches) {
+            const updateLogic = async (pName, myG, oppG) => {
+                const isWin = myG > oppG ? 1 : 0;
+                const isDraw = myG === oppG ? 1 : 0;
+                const isLoss = myG < oppG ? 1 : 0;
+                const pts = (isWin * 3) + (isDraw * 1);
+
+                await DuoStanding.findOneAndUpdate(
+                    { tourId: tourId, participant: pName, group: m.group },
                     { 
                         $inc: { 
                             played: 1, wins: isWin, draws: isDraw, losses: isLoss, 
-                            gf: myGoals, ga: oppGoals, points: pts 
+                            gf: myG, ga: oppG, points: pts 
                         } 
-                    },
-                    { upsert: true }
+                    }
                 );
             };
 
-            await processTeams(m.playerA, m.scoreA, m.scoreB);
-            await processTeams(m.playerB, m.scoreB, m.scoreA);
+            await updateLogic(m.playerA, m.scoreA, m.scoreB);
+            await updateLogic(m.playerB, m.scoreB, m.scoreA);
         }
 
-        res.json({ success: true, message: "Neural Link Synced: Table Rebuilt Successfully!" });
+        res.json({ 
+            success: true, 
+            message: `Table Rebuilt! Found ${allFixtures.length} total teams across groups.` 
+        });
+
     } catch (err) {
-        console.error("Recalc Error:", err);
+        console.error("Hybrid Recovery Error:", err);
         res.status(500).json({ success: false, error: err.message });
     }
 });
-
 
 const PORT = process.env.PORT || 5001;
 app.listen(PORT, () => console.log(`Auxiliary AI Node running on ${PORT}`));
