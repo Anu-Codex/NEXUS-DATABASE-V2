@@ -282,44 +282,51 @@ app.delete('/api/duo/fixture/:id', async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
-// RECALCULATE DUO POINTS TABLE FROM HISTORY
+// RECALCULATE DUO TABLE (Strict Group-Wise Rebuild)
 app.get('/api/duo/recalculate/:tourId', async (req, res) => {
     try {
         const { tourId } = req.params;
 
-        // 1. Reset all standings for this tournament to 0
-        await DuoStanding.updateMany({ tourId }, { 
-            played: 0, wins: 0, draws: 0, losses: 0, gf: 0, ga: 0, points: 0 
-        });
+        // 1. TOTAL RESET: Delete all existing standings for this specific tournament
+        // This is the only way to remove "stuck" points from deleted matches
+        await DuoStanding.deleteMany({ tourId: tourId });
 
-        // 2. Get all COMPLETED matches for this tournament
-        const matches = await DuoFixture.find({ tourId, status: "Completed" });
+        // 2. FETCH HISTORY: Get all COMPLETED matches
+        const matches = await DuoFixture.find({ tourId: tourId, status: "Completed" });
 
-        // 3. Loop through matches and re-apply points
+        if (matches.length === 0) {
+            return res.json({ success: true, message: "Standings reset to 0 (No matches found)." });
+        }
+
+        // 3. REBUILD LOOP
         for (let m of matches) {
-            const updateStats = async (name, myS, oppS, groupName) => {
-                const isWin = myS > oppS ? 1 : 0;
-                const isDraw = myS === oppS ? 1 : 0;
-                const isLoss = myS < oppS ? 1 : 0;
+            const processTeams = async (name, myGoals, oppGoals) => {
+                const isWin = myGoals > oppGoals ? 1 : 0;
+                const isDraw = myGoals === oppGoals ? 1 : 0;
+                const isLoss = myGoals < oppGoals ? 1 : 0;
                 const pts = isWin ? 3 : (isDraw ? 1 : 0);
 
+                // Re-insert into Standings with correct Group from the match data
                 await DuoStanding.findOneAndUpdate(
-                    { tourId, participant: name, group: groupName },
-                    { $inc: { 
-                        played: 1, wins: isWin, draws: isDraw, losses: isLoss, 
-                        gf: myS, ga: oppS, points: pts 
-                    }},
+                    { tourId: tourId, participant: name, group: m.group || "Group A" },
+                    { 
+                        $inc: { 
+                            played: 1, wins: isWin, draws: isDraw, losses: isLoss, 
+                            gf: myGoals, ga: oppGoals, points: pts 
+                        } 
+                    },
                     { upsert: true }
                 );
             };
 
-            await updateStats(m.playerA, m.scoreA, m.scoreB, m.group);
-            await updateStats(m.playerB, m.scoreB, m.scoreA, m.group);
+            await processTeams(m.playerA, m.scoreA, m.scoreB);
+            await processTeams(m.playerB, m.scoreB, m.scoreA);
         }
 
-        res.json({ success: true, message: "Duo Table recalculated from match history!" });
+        res.json({ success: true, message: "Neural Link Synced: Table Rebuilt Successfully!" });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error("Recalc Error:", err);
+        res.status(500).json({ success: false, error: err.message });
     }
 });
 
