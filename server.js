@@ -271,6 +271,17 @@ app.put('/api/duo/update-score/:id', async (req, res) => {
         res.json({ success: true });
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
+// DELETE DUO FIXTURE
+app.delete('/api/duo/fixture/:id', async (req, res) => {
+    try {
+        const fixture = await DuoFixture.findByIdAndDelete(req.params.id);
+        if (!fixture) return res.status(404).json({ message: "Fixture not found" });
+        
+        res.json({ success: true, message: "Fixture removed from database." });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
 
 
 const PORT = process.env.PORT || 5001;
