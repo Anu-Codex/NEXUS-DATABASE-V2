@@ -275,53 +275,56 @@ app.delete('/api/duo/fixture/:id', async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
-// FINAL HYBRID RECOVERY - GROUP STRICT VERSION
+// NUCLEAR RECALCULATE: Wipes everything and rebuilds strictly from Fixtures
 app.get('/api/duo/recalculate/:tourId', async (req, res) => {
     try {
         const { tourId } = req.params;
 
-        // 1. WIPE current standings
+        // 1. DELETE EVERY STANDING ENTRY for this tour
+        // This removes all the teams stuck in "Group A"
         await DuoStanding.deleteMany({ tourId: tourId });
 
-        // 2. FETCH FIXTURES
+        // 2. GET ALL FIXTURES (We need these to know who belongs where)
         const allFixtures = await DuoFixture.find({ tourId: tourId });
 
         if (allFixtures.length === 0) return res.json({ success: false, error: "No matches found." });
 
-        // 3. INITIALIZE STANDINGS FROM FIXTURE DATA
+        // 3. REBUILD THE TABLE
         for (let m of allFixtures) {
-            // CRITICAL: We take the group directly from what was saved in the match
-            const matchGroup = m.group || "UNASSIGNED"; 
+            const currentGroup = m.group || "Group A"; // Takes Group B, C, etc.
+            
+            const processTeam = async (pName, myG, oppG, isCompleted) => {
+                let wins = 0, draws = 0, losses = 0, played = 0, pts = 0;
 
-            const teams = [m.playerA, m.playerB];
-            for (let tName of teams) {
+                if (isCompleted) {
+                    played = 1;
+                    if (myG > oppG) { wins = 1; pts = 3; }
+                    else if (myG === oppG) { draws = 1; pts = 1; }
+                    else { losses = 1; }
+                }
+
+                // We use $inc so it adds up match by match
                 await DuoStanding.findOneAndUpdate(
-                    { tourId: tourId, participant: tName, group: matchGroup },
-                    { tourId: tourId, participant: tName, group: matchGroup },
-                    { upsert: true, new: true }
-                );
-            }
-        }
-
-        // 4. ADD POINTS FOR COMPLETED MATCHES
-        const completed = allFixtures.filter(m => m.status === "Completed");
-        for (let m of completed) {
-            const updateStats = async (pName, g1, g2) => {
-                const isWin = g1 > g2 ? 1 : 0;
-                const isDraw = g1 === g2 ? 1 : 0;
-                const pts = (isWin * 3) + (isDraw * 1);
-
-                await DuoStanding.findOneAndUpdate(
-                    { tourId: tourId, participant: pName, group: m.group || "UNASSIGNED" },
-                    { $inc: { played: 1, wins: isWin, draws: isDraw, losses: (g1 < g2 ? 1 : 0), gf: g1, ga: g2, points: pts } }
+                    { tourId: tourId, participant: pName, group: currentGroup },
+                    { 
+                        $inc: { 
+                            played: played, wins: wins, draws: draws, losses: losses, 
+                            gf: myG || 0, ga: oppG || 0, points: pts 
+                        } 
+                    },
+                    { upsert: true }
                 );
             };
-            await updateStats(m.playerA, m.scoreA, m.scoreB);
-            await updateStats(m.playerB, m.scoreB, m.scoreA);
+
+            const isDone = m.status === "Completed";
+            await processTeam(m.playerA, m.scoreA, m.scoreB, isDone);
+            await processTeam(m.playerB, m.scoreB, m.scoreA, isDone);
         }
 
-        res.json({ success: true, message: "Sync Complete. Check if 'UNASSIGNED' group appeared." });
-    } catch (err) { res.status(500).json({ error: err.message }); }
+        res.json({ success: true, message: "DATABASE RESTRUCTURED: All teams moved to their assigned groups." });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 const PORT = process.env.PORT || 5001;
