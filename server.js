@@ -326,6 +326,34 @@ app.get('/api/duo/recalculate/:tourId', async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
+// MANUAL GROUP OVERRIDE: Moves a team and all their matches to a specific group
+app.post('/api/duo/manual-group-move', async (req, res) => {
+    try {
+        const { tourId, teamName, newGroup } = req.body;
+
+        if (!tourId || !teamName || !newGroup) {
+            return res.status(400).json({ error: "Missing required fields" });
+        }
+
+        // 1. Move the team in the Standings (Table)
+        await DuoStanding.findOneAndUpdate(
+            { tourId: tourId, participant: teamName },
+            { $set: { group: newGroup } },
+            { upsert: true }
+        );
+
+        // 2. Update EVERY fixture this team is part of to the new group
+        // This ensures the next "Sync" doesn't move them back to the wrong group
+        await DuoFixture.updateMany(
+            { tourId: tourId, $or: [{ playerA: teamName }, { playerB: teamName }] },
+            { $set: { group: newGroup } }
+        );
+
+        res.json({ success: true, message: `${teamName} and all their matches moved to ${newGroup}` });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
 
 const PORT = process.env.PORT || 5001;
 app.listen(PORT, () => console.log(`Auxiliary AI Node running on ${PORT}`));
