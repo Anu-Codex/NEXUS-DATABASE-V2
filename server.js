@@ -354,5 +354,31 @@ app.post('/api/duo/manual-group-move', async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
+// DELETE ENTIRE DUO TOURNAMENT (Tournament + Fixtures + Standings + Ranks)
+app.delete('/api/duo/tournament/:id', async (req, res) => {
+    try {
+        const tourId = req.params.id;
+
+        // 1. Delete the Tournament Metadata
+        await DuoTournament.findByIdAndDelete(tourId);
+
+        // 2. Delete all Fixtures belonging to this tour
+        await DuoFixture.deleteMany({ tourId: tourId });
+
+        // 3. Delete all Standings (Points Table) entries
+        await DuoStanding.deleteMany({ tourId: tourId });
+
+        // 4. Delete all Scorer records (Golden Boot)
+        // Ensure your DuoRank model matches the field name 'tourId'
+        if (mongoose.models.DuoRank) {
+            await mongoose.model('DuoRank').deleteMany({ tourId: tourId });
+        }
+
+        res.json({ success: true, message: "Tournament and all associated data permanently deleted." });
+    } catch (err) {
+        console.error("Delete Tour Error:", err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
 const PORT = process.env.PORT || 5001;
 app.listen(PORT, () => console.log(`Auxiliary AI Node running on ${PORT}`));
