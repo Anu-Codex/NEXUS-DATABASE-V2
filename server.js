@@ -380,5 +380,45 @@ app.delete('/api/duo/tournament/:id', async (req, res) => {
         res.status(500).json({ success: false, error: err.message });
     }
 });
+// --- 1. NEURAL STAT INJECTOR (Sync stats without shifting groups) ---
+app.get('/api/duo/sync-stats/:tourId', async (req, res) => {
+    try {
+        const { tourId } = req.params;
+
+        // Reset only numeric stats for existing teams in standings
+        // We DO NOT delete the entries, so groups remain locked
+        await DuoStanding.updateMany({ tourId }, { 
+            played: 0, wins: 0, draws: 0, losses: 0, gf: 0, ga: 0, points: 0 
+        });
+
+        const completedMatches = await DuoFixture.find({ tourId, status: "Completed" });
+
+        for (let m of completedMatches) {
+            const updateTeam = async (name, myG, oppG) => {
+                const win = myG > oppG ? 1 : 0;
+                const draw = myG === oppG ? 1 : 0;
+                const pts = (win * 3) + (draw * 1);
+
+                // We find by name + tourId. The group remains what was already there.
+                await DuoStanding.findOneAndUpdate(
+                    { tourId, participant: name },
+                    { $inc: { played: 1, wins: win, draws: draw, losses: (myG < oppG ? 1 : 0), gf: myG, ga: oppG, points: pts } }
+                );
+            };
+            await updateTeam(m.playerA, m.scoreA, m.scoreB);
+            await updateTeam(m.playerB, m.scoreB, m.scoreA);
+        }
+        res.json({ success: true, message: `Stats injected from ${completedMatches.length} matches.` });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// --- 2. GET INTERNAL PARTICIPANTS (For Fixture Gen v2) ---
+app.get('/api/duo/participants/:tourId', async (req, res) => {
+    try {
+        // Fetch teams that are already in the Points Table for this tour
+        const teams = await DuoStanding.find({ tourId: req.params.tourId }, 'participant group');
+        res.json(teams);
+    } catch (err) { res.status(500).json([]); }
+});
 const PORT = process.env.PORT || 5001;
 app.listen(PORT, () => console.log(`Auxiliary AI Node running on ${PORT}`));
