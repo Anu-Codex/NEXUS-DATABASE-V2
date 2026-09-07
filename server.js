@@ -420,5 +420,26 @@ app.get('/api/duo/participants/:tourId', async (req, res) => {
         res.json(teams);
     } catch (err) { res.status(500).json([]); }
 });
+// --- LIVE BROADCAST SCHEMA ---
+const LiveMatchSchema = new mongoose.Schema({
+    title: { type: String, default: "LIVE TOURNAMENT" },
+    url: { type: String, default: "" },
+    isActive: { type: Boolean, default: false }
+});
+const LiveMatch = mongoose.model('LiveMatch', LiveMatchSchema);
+
+// Admin: Set Live Link
+app.post('/api/live/update', async (req, res) => {
+    await LiveMatch.deleteMany({}); // Keep only 1 active link
+    const newLive = new LiveMatch(req.body);
+    await newLive.save();
+    res.json({ success: true });
+});
+
+// Public: Get Live Link
+app.get('/api/live/now', async (req, res) => {
+    const live = await LiveMatch.findOne();
+    res.json(live || { isActive: false });
+});
 const PORT = process.env.PORT || 5001;
 app.listen(PORT, () => console.log(`Auxiliary AI Node running on ${PORT}`));
