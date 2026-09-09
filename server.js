@@ -441,5 +441,116 @@ app.get('/api/live/now', async (req, res) => {
     const live = await LiveMatch.findOne();
     res.json(live || { isActive: false });
 });
+// --- 1. PROFILE VIEW SCHEMA (Auto-deletes after 14 days to keep DB fast) ---
+const profileViewSchema = new mongoose.Schema({
+    playerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Player', required: true, index: true },
+    ip: { type: String, required: true },
+    timestamp: { type: Date, default: Date.now, index: true }
+});
+
+// Auto-expire documents after 14 days so your MongoDB storage stays light
+profileViewSchema.index({ timestamp: 1 }, { expireAfterSeconds: 14 * 24 * 60 * 60 });
+
+const ProfileView = mongoose.models.ProfileView || mongoose.model('ProfileView', profileViewSchema);
+
+// --- 2. RECORD A PROFILE VISIT (With 30-Minute Spam Deduplication) ---
+app.post('/api/players/:id/view', async (req, res) => {
+    try {
+        const playerId = req.params.id;
+        // Grab visitor IP
+        const rawIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
+        const clientIp = rawIp.split(',')[0].trim();
+
+        const thirtyMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
+
+        // Check if this same IP visited this player within the last 30 minutes
+        const recentVisit = await ProfileView.findOne({
+            playerId: playerId,
+            ip: clientIp,
+            timestamp: { $gte: fifteenMinutesAgo }
+        });
+
+        if (recentVisit) {
+            // Already counted recently, do not inflate count
+            return res.json({ success: true, recorded: false, message: "Visit already logged recently" });
+        }
+
+        // Record fresh visit
+        await ProfileView.create({
+            playerId: playerId,
+            ip: clientIp,
+            timestamp: new Date()
+        });
+
+        res.json({ success: true, recorded: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// --- 3. GET 7-DAY TRENDING PLAYERS LEADERBOARD ---
+app.get('/api/players/trending/weekly', async (req, res) => {
+    try {
+        const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+        const startOfToday = new Date();
+        startOfToday.setHours(0, 0, 0, 0);
+
+        // High-performance aggregation pipeline
+        const trendingStats = await ProfileView.aggregate([
+            { $match: { timestamp: { $gte: sevenDaysAgo } } },
+            {
+                $group: {
+                    _id: "$playerId",
+                    views7d: { $sum: 1 },
+                    viewsToday: {
+                        $sum: {
+                            $cond: [{ $gte: ["$timestamp", startOfToday] }, 1, 0]
+                        }
+                    }
+                }
+            },
+            { $sort: { views7d: -1 } },
+            { $limit: 15 },
+            {
+                $lookup: {
+                    from: "players",
+                    localField: "_id",
+                    foreignField: "_id",
+                    as: "playerData"
+                }
+            },
+            { $unwind: "$playerData" }
+        ]);
+
+        const result = trendingStats.map(item => {
+            const p = item.playerData;
+            
+            // Tier calculation: uses p.tier if set, or calculates by Market Value
+            let tier = p.tier || 'B';
+            if (!p.tier) {
+                const val = p.marketValue || 0;
+                if (val >= 40) tier = 'S';
+                else if (val >= 20) tier = 'A';
+                else tier = 'B';
+            }
+
+            return {
+                _id: p._id,
+                name: p.name,
+                image: p.image || 'https://via.placeholder.com/50',
+                teamName: p.teamName || 'No team',
+                teamLogo: p.teamLogo || '',
+                tier: tier,
+                views7d: item.views7d,
+                viewsToday: item.viewsToday
+            };
+        });
+
+        res.json(result);
+    } catch (err) {
+        console.error("Trending Error:", err);
+        res.status(500).json({ error: err.message });
+    }
+});
 const PORT = process.env.PORT || 5001;
 app.listen(PORT, () => console.log(`Auxiliary AI Node running on ${PORT}`));
