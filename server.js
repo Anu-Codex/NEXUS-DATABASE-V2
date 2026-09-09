@@ -441,62 +441,65 @@ app.get('/api/live/now', async (req, res) => {
     const live = await LiveMatch.findOne();
     res.json(live || { isActive: false });
 });
-// --- 1. PROFILE VIEW SCHEMA (Auto-deletes after 14 days to keep DB fast) ---
+// --- 1. PROFILE VIEW SCHEMA ---
 const profileViewSchema = new mongoose.Schema({
-    playerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Player', required: true, index: true },
+    playerId: { type: String, required: true, index: true }, // String is safer for matching
     ip: { type: String, required: true },
     timestamp: { type: Date, default: Date.now, index: true }
 });
 
-// Auto-expire documents after 14 days so your MongoDB storage stays light
+// Auto-delete records older than 14 days
 profileViewSchema.index({ timestamp: 1 }, { expireAfterSeconds: 14 * 24 * 60 * 60 });
 
 const ProfileView = mongoose.models.ProfileView || mongoose.model('ProfileView', profileViewSchema);
 
-// --- 2. RECORD A PROFILE VISIT (With 30-Minute Spam Deduplication) ---
+// --- 2. RECORD VISIT (With 30-Min Deduplication) ---
 app.post('/api/players/:id/view', async (req, res) => {
     try {
         const playerId = req.params.id;
-        // Grab visitor IP
+        if (!playerId || playerId === "undefined" || playerId === "null") {
+            return res.status(400).json({ success: false, error: "Invalid Player ID" });
+        }
+
         const rawIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
         const clientIp = rawIp.split(',')[0].trim();
+        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
 
-        const thirtyMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
-
-        // Check if this same IP visited this player within the last 30 minutes
+        // Check if recently viewed by same IP
         const recentVisit = await ProfileView.findOne({
-            playerId: playerId,
+            playerId: String(playerId),
             ip: clientIp,
-            timestamp: { $gte: fifteenMinutesAgo }
+            timestamp: { $gte: thirtyMinutesAgo }
         });
 
         if (recentVisit) {
-            // Already counted recently, do not inflate count
-            return res.json({ success: true, recorded: false, message: "Visit already logged recently" });
+            console.log(`[View Tracker] Skipped duplicate view for player: ${playerId}`);
+            return res.json({ success: true, recorded: false, message: "View already counted recently (Cooldown active)" });
         }
 
-        // Record fresh visit
         await ProfileView.create({
-            playerId: playerId,
+            playerId: String(playerId),
             ip: clientIp,
             timestamp: new Date()
         });
 
+        console.log(`[View Tracker] ✅ New view logged for player: ${playerId}`);
         res.json({ success: true, recorded: true });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error("[View Tracker Error]:", err.message);
+        res.status(500).json({ success: false, error: err.message });
     }
 });
 
-// --- 3. GET 7-DAY TRENDING PLAYERS LEADERBOARD ---
+// --- 3. GET 7-DAY TRENDING LEADERBOARD (Bulletproof Join) ---
 app.get('/api/players/trending/weekly', async (req, res) => {
     try {
         const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
         const startOfToday = new Date();
         startOfToday.setHours(0, 0, 0, 0);
 
-        // High-performance aggregation pipeline
-        const trendingStats = await ProfileView.aggregate([
+        // 1. Group total views in last 7 days + today
+        const viewStats = await ProfileView.aggregate([
             { $match: { timestamp: { $gte: sevenDaysAgo } } },
             {
                 $group: {
@@ -510,45 +513,46 @@ app.get('/api/players/trending/weekly', async (req, res) => {
                 }
             },
             { $sort: { views7d: -1 } },
-            { $limit: 15 },
-            {
-                $lookup: {
-                    from: "players",
-                    localField: "_id",
-                    foreignField: "_id",
-                    as: "playerData"
-                }
-            },
-            { $unwind: "$playerData" }
+            { $limit: 15 }
         ]);
 
-        const result = trendingStats.map(item => {
-            const p = item.playerData;
-            
-            // Tier calculation: uses p.tier if set, or calculates by Market Value
-            let tier = p.tier || 'B';
-            if (!p.tier) {
-                const val = p.marketValue || 0;
-                if (val >= 40) tier = 'S';
-                else if (val >= 20) tier = 'A';
-                else tier = 'B';
-            }
+        if (viewStats.length === 0) {
+            return res.json([]);
+        }
 
-            return {
-                _id: p._id,
-                name: p.name,
-                image: p.image || 'https://via.placeholder.com/50',
-                teamName: p.teamName || 'No team',
-                teamLogo: p.teamLogo || '',
-                tier: tier,
-                views7d: item.views7d,
-                viewsToday: item.viewsToday
-            };
-        });
+        // 2. Fetch player details safely using Mongoose
+        const playerIds = viewStats.map(v => v._id);
+        const players = await Player.find({ _id: { $in: playerIds } });
+
+        // 3. Merge views and player data in JS (Immune to BSON ObjectId/String type errors)
+        const result = [];
+        for (let stat of viewStats) {
+            const p = players.find(player => String(player._id) === String(stat._id));
+            if (p) {
+                // Tier logic: uses existing tier or calculates by Market Value
+                let tier = p.tier;
+                if (!tier) {
+                    const val = p.marketValue || 0;
+                    if (val >= 40) tier = 'S';
+                    else if (val >= 20) tier = 'A';
+                    else tier = 'B';
+                }
+
+                result.push({
+                    _id: p._id,
+                    name: p.name,
+                    image: p.image || 'https://via.placeholder.com/50',
+                    teamName: p.teamName || 'No team',
+                    tier: tier,
+                    views7d: stat.views7d,
+                    viewsToday: stat.viewsToday
+                });
+            }
+        }
 
         res.json(result);
     } catch (err) {
-        console.error("Trending Error:", err);
+        console.error("[Trending Route Error]:", err.message);
         res.status(500).json({ error: err.message });
     }
 });
