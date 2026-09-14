@@ -556,5 +556,47 @@ app.get('/api/players/trending/weekly', async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
+// --- GLORY GALLERY POSTER SCHEMA ---
+const gloryPosterSchema = new mongoose.Schema({
+    playerName: { type: String, required: true },
+    tourName: { type: String, required: true },
+    status: { type: String, default: "CHAMPION" }, // CHAMPION, RUNNER-UP, MVP, GOLDEN BOOT
+    imageUrl: { type: String, required: true },
+    season: { type: String, default: "Season 1" },
+    createdAt: { type: Date, default: Date.now }
+});
+
+const GloryPoster = mongoose.models.GloryPoster || mongoose.model('GloryPoster', gloryPosterSchema);
+
+// 1. GET ALL POSTERS
+app.get('/api/glory/posters', async (req, res) => {
+    try {
+        const posters = await GloryPoster.find().sort({ createdAt: -1 });
+        res.json(posters);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// 2. ADD POSTER (From Dashboard)
+app.post('/api/glory/posters', async (req, res) => {
+    try {
+        const poster = new GloryPoster(req.body);
+        await poster.save();
+        res.json({ success: true, message: "Glory Poster published successfully!" });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// 3. DELETE POSTER (From Dashboard)
+app.delete('/api/glory/posters/:id', async (req, res) => {
+    try {
+        await GloryPoster.findByIdAndDelete(req.params.id);
+        res.json({ success: true, message: "Poster deleted." });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
 const PORT = process.env.PORT || 5001;
 app.listen(PORT, () => console.log(`Auxiliary AI Node running on ${PORT}`));
