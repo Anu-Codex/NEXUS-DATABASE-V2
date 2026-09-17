@@ -598,39 +598,108 @@ app.delete('/api/glory/posters/:id', async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
-// --- BULK IMPORT PLAYERS FROM CSV (FILTERED BY ADMIN) ---
+// =======================================================
+// BULK IMPORT PLAYERS (CSV / REGISTRATION FORM IMPORT)
+// =======================================================
 app.post('/api/players/bulk-import', async (req, res) => {
     try {
         const { players } = req.body;
 
+        // 1. Validation
         if (!Array.isArray(players) || players.length === 0) {
-            return res.status(400).json({ error: "No players selected for import." });
+            return res.status(400).json({ 
+                success: false, 
+                error: "Invalid request. 'players' array is required and cannot be empty." 
+            });
         }
 
+        const PlayerModel = mongoose.models.Player || mongoose.model('Player');
+
         const added = [];
+        const updated = [];
         const skipped = [];
 
-        // Inside app.post('/api/players/bulk-import', ...) in server.js
+        // 2. Process each player from the parsed CSV
         for (const p of players) {
             const trimmedName = p.name ? p.name.trim() : "";
             if (!trimmedName) continue;
 
-            const exists = await Player.findOne({
+            const trimmedNick = p.nickname ? p.nickname.trim() : "";
+            const squadImg = p.squadImage ? p.squadImage.trim() : "";
+
+            // Check if player already exists (Case-Insensitive)
+            const existingPlayer = await PlayerModel.findOne({
                 name: { $regex: new RegExp('^' + trimmedName + '$', 'i') }
             });
 
-            if (!exists) {
-                const newPlayer = new Player({
+            if (!existingPlayer) {
+                // Create brand-new player profile
+                const newPlayer = new PlayerModel({
                     name: trimmedName,
-                    nickname: p.nickname || "", // 👈 Saves Nickname (e.g. XeNo)
-                    squadImage: p.squadImage || "",
-                    image: p.squadImage || "", // Uses squad screenshot as initial avatar
-                    teamName: "Free Agent"
+                    nickname: trimmedNick,
+                    squadImage: squadImg,
+                    image: squadImg, // Sets squad screenshot as initial avatar so profile isn't blank
+                    teamName: "Free Agent",
+                    auctionPrice: 0,
+                    marketValue: 0,
+                    bdrPoints: 0,
+                    soloBdrPoints: 0,
+                    isCaptain: false,
+                    attributes: {
+                        consistency: 50,
+                        bigMatch: 50,
+                        scoring: 50,
+                        playmaking: 50,
+                        defense: 50,
+                        mental: 50
+                    }
                 });
+
                 await newPlayer.save();
                 added.push(trimmedName);
+            } else {
+                // If player already exists, update their squad image or nickname if missing
+                let wasModified = false;
+
+                if (squadImg && (!existingPlayer.squadImage || existingPlayer.squadImage === "")) {
+                    existingPlayer.squadImage = squadImg;
+                    if (!existingPlayer.image || existingPlayer.image === "") {
+                        existingPlayer.image = squadImg;
+                    }
+                    wasModified = true;
+                }
+
+                if (trimmedNick && (!existingPlayer.nickname || existingPlayer.nickname === "")) {
+                    existingPlayer.nickname = trimmedNick;
+                    wasModified = true;
+                }
+
+                if (wasModified) {
+                    await existingPlayer.save();
+                    updated.push(trimmedName);
+                } else {
+                    skipped.push(trimmedName);
+                }
             }
         }
+
+        console.log(`[Bulk Import] Added: ${added.length}, Updated: ${updated.length}, Skipped: ${skipped.length}`);
+
+        res.json({
+            success: true,
+            message: `Successfully processed registration: ${added.length} added, ${updated.length} updated, ${skipped.length} duplicates skipped.`,
+            addedCount: added.length,
+            updatedCount: updated.length,
+            skippedCount: skipped.length,
+            addedPlayers: added
+        });
+
+    } catch (err) {
+        console.error("Bulk Import Error:", err);
+        res.status(500).json({ 
+            success: false, 
+            error: "Failed to import players: " + err.message 
+        });
     }
 });
 const PORT = process.env.PORT || 5001;
