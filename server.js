@@ -610,11 +610,11 @@ app.post('/api/players/bulk-import', async (req, res) => {
         const added = [];
         const skipped = [];
 
+        // Inside app.post('/api/players/bulk-import', ...) in server.js
         for (const p of players) {
             const trimmedName = p.name ? p.name.trim() : "";
             if (!trimmedName) continue;
 
-            // Check if player already exists to avoid duplicate entries
             const exists = await Player.findOne({
                 name: { $regex: new RegExp('^' + trimmedName + '$', 'i') }
             });
@@ -622,35 +622,15 @@ app.post('/api/players/bulk-import', async (req, res) => {
             if (!exists) {
                 const newPlayer = new Player({
                     name: trimmedName,
+                    nickname: p.nickname || "", // 👈 Saves Nickname (e.g. XeNo)
                     squadImage: p.squadImage || "",
-                    image: p.squadImage || "", // Fallback so profile has an avatar
-                    teamName: "Free Agent",
-                    auctionPrice: 0,
-                    marketValue: 0,
-                    bdrPoints: 0,
-                    soloBdrPoints: 0
+                    image: p.squadImage || "", // Uses squad screenshot as initial avatar
+                    teamName: "Free Agent"
                 });
                 await newPlayer.save();
                 added.push(trimmedName);
-            } else {
-                // If exists but had no squad image, fill it
-                if (p.squadImage && !exists.squadImage) {
-                    exists.squadImage = p.squadImage;
-                    await exists.save();
-                }
-                skipped.push(trimmedName);
             }
         }
-
-        res.json({
-            success: true,
-            message: `Successfully added ${added.length} players! (${skipped.length} duplicates skipped)`,
-            addedCount: added.length,
-            skippedCount: skipped.length
-        });
-    } catch (err) {
-        console.error("Bulk Import Error:", err);
-        res.status(500).json({ error: err.message });
     }
 });
 const PORT = process.env.PORT || 5001;
