@@ -598,5 +598,60 @@ app.delete('/api/glory/posters/:id', async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
+// --- BULK IMPORT PLAYERS FROM CSV (FILTERED BY ADMIN) ---
+app.post('/api/players/bulk-import', async (req, res) => {
+    try {
+        const { players } = req.body;
+
+        if (!Array.isArray(players) || players.length === 0) {
+            return res.status(400).json({ error: "No players selected for import." });
+        }
+
+        const added = [];
+        const skipped = [];
+
+        for (const p of players) {
+            const trimmedName = p.name ? p.name.trim() : "";
+            if (!trimmedName) continue;
+
+            // Check if player already exists to avoid duplicate entries
+            const exists = await Player.findOne({
+                name: { $regex: new RegExp('^' + trimmedName + '$', 'i') }
+            });
+
+            if (!exists) {
+                const newPlayer = new Player({
+                    name: trimmedName,
+                    squadImage: p.squadImage || "",
+                    image: p.squadImage || "", // Fallback so profile has an avatar
+                    teamName: "Free Agent",
+                    auctionPrice: 0,
+                    marketValue: 0,
+                    bdrPoints: 0,
+                    soloBdrPoints: 0
+                });
+                await newPlayer.save();
+                added.push(trimmedName);
+            } else {
+                // If exists but had no squad image, fill it
+                if (p.squadImage && !exists.squadImage) {
+                    exists.squadImage = p.squadImage;
+                    await exists.save();
+                }
+                skipped.push(trimmedName);
+            }
+        }
+
+        res.json({
+            success: true,
+            message: `Successfully added ${added.length} players! (${skipped.length} duplicates skipped)`,
+            addedCount: added.length,
+            skippedCount: skipped.length
+        });
+    } catch (err) {
+        console.error("Bulk Import Error:", err);
+        res.status(500).json({ error: err.message });
+    }
+});
 const PORT = process.env.PORT || 5001;
 app.listen(PORT, () => console.log(`Auxiliary AI Node running on ${PORT}`));
