@@ -45,6 +45,9 @@ const PlayerSchema = new mongoose.Schema({
     bdrPoints: Number,
     teamName: String,
     attributes: mongoose.Schema.Types.Mixed,
+    googleId: { type: String, default: null, index: true },
+    googleEmail: { type: String, default: null },
+    isClaimed: { type: Boolean, default: false },
     cachedScoutReport: String
 });
 const Player = mongoose.model('Player', PlayerSchema);
@@ -700,6 +703,141 @@ app.post('/api/players/bulk-import', async (req, res) => {
             success: false, 
             error: "Failed to import players: " + err.message 
         });
+    }
+});
+const { OAuth2Client } = require('google-auth-library');
+const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+
+// --- 1. GOOGLE LOGIN & STATUS CHECK ---
+app.post('/api/auth/google', async (req, res) => {
+    try {
+        const { credential } = req.body;
+        if (!credential) return res.status(400).json({ error: "Missing Google credential token" });
+
+        // Verify token directly with Google
+        const ticket = await googleClient.verifyIdToken({
+            idToken: credential,
+            audience: process.env.GOOGLE_CLIENT_ID
+        });
+        const payload = ticket.getPayload();
+        const { sub: googleId, email, picture, name } = payload;
+
+        // A. Check if already linked to a player profile
+        let player = await Player.findOne({ googleId: googleId });
+
+        // B. If not found by googleId, check if pre-registered by email
+        if (!player && email) {
+            player = await Player.findOne({ 
+                $or: [{ googleEmail: email.toLowerCase() }, { email: email.toLowerCase() }] 
+            });
+            if (player) {
+                // Auto-link by matching email
+                player.googleId = googleId;
+                player.googleEmail = email.toLowerCase();
+                player.isClaimed = true;
+                if (!player.image) player.image = picture;
+                await player.save();
+            }
+        }
+
+        // C. If already linked: Return player data immediately
+        if (player) {
+            return res.json({
+                success: true,
+                isLinked: true,
+                player: player
+            });
+        }
+
+        // D. First-Time User: Fetch all unclaimed players for the one-time dropdown
+        const unclaimedPlayers = await Player.find({ 
+            $or: [{ isClaimed: false }, { isClaimed: { $exists: false } }, { googleId: null }] 
+        }, 'name teamName image').sort({ name: 1 });
+
+        res.json({
+            success: true,
+            isLinked: false,
+            googleUser: { googleId, email, name, picture },
+            unclaimedPlayers: unclaimedPlayers
+        });
+
+    } catch (err) {
+        console.error("Google Auth Error:", err);
+        res.status(500).json({ error: "Google verification failed: " + err.message });
+    }
+});
+
+// --- 2. ONE-TIME PROFILE CLAIM ROUTE (PERMANENTLY LOCKED) ---
+app.post('/api/auth/google/claim-profile', async (req, res) => {
+    try {
+        const { credential, playerId } = req.body;
+
+        // Verify Google token again for strict security
+        const ticket = await googleClient.verifyIdToken({
+            idToken: credential,
+            audience: process.env.GOOGLE_CLIENT_ID
+        });
+        const { sub: googleId, email, picture } = ticket.getPayload();
+
+        // 1. Check if this Google account already claimed someone
+        const existingClaim = await Player.findOne({ googleId: googleId });
+        if (existingClaim) {
+            return res.status(400).json({ error: "Your Google account is already linked to " + existingClaim.name });
+        }
+
+        // 2. Find target player
+        const player = await Player.findById(playerId);
+        if (!player) return res.status(404).json({ error: "Player profile not found" });
+
+        // 3. Prevent overwriting another player's claimed account
+        if (player.isClaimed && player.googleId) {
+            return res.status(400).json({ error: "This player profile has already been claimed by another user!" });
+        }
+
+        // 4. Lock Profile Permanently
+        player.googleId = googleId;
+        player.googleEmail = email.toLowerCase();
+        player.isClaimed = true;
+        if (!player.image || player.image === "") {
+            player.image = picture; // Use Google photo if player had no avatar
+        }
+        await player.save();
+
+        console.log(`🔒 [AUTH LOCKED] ${player.name} claimed by ${email} (${googleId})`);
+
+        res.json({
+            success: true,
+            message: `Successfully linked your Google account to ${player.name}!`,
+            player: player
+        });
+
+    } catch (err) {
+        console.error("Claim Profile Error:", err);
+        res.status(500).json({ error: "Failed to claim profile: " + err.message });
+    }
+});
+
+// --- 3. SECRET ADMIN OVERRIDE: RESET / UNLINK GOOGLE ACCOUNT (DASHBOARD ONLY) ---
+app.put('/api/admin/players/:id/unlink-auth', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const player = await Player.findByIdAndUpdate(
+            id,
+            {
+                $set: {
+                    googleId: null,
+                    googleEmail: null,
+                    isClaimed: false
+                }
+            },
+            { new: true }
+        );
+
+        if (!player) return res.status(404).json({ error: "Player not found" });
+
+        res.json({ success: true, message: `Auth unlinked. ${player.name} can now be claimed again.` });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
 });
 const PORT = process.env.PORT || 5001;
