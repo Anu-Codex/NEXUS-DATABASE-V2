@@ -17,7 +17,8 @@
     "mongoose": "^7.5.2",
     "sib-api-v3-sdk": "^8.5.0",
     "socket.io": "^4.7.2",
-    "groq-sdk": "^0.5.0"
+    "groq-sdk": "^0.5.0",
+    "google-auth-library": "^9.0.0"
   },
   "engines": {
     "node": ">=18.0.0"
