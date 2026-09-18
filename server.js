@@ -840,5 +840,62 @@ app.put('/api/admin/players/:id/unlink-auth', async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
+// --- UPDATE PLAYER PROFILE (DASHBOARD & SELF-UPDATE) ---
+app.put('/api/players/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        // 1. Validate MongoDB ObjectId to prevent CastError crashes
+        if (!id || id === "undefined" || id === "null" || !mongoose.Types.ObjectId.isValid(id)) {
+            return res.status(400).json({ 
+                success: false, 
+                error: "Invalid or missing Player ID in session. Please re-login." 
+            });
+        }
+
+        const { name, nickname, image, squadImage } = req.body;
+
+        // 2. Find existing player
+        const player = await Player.findById(id);
+        if (!player) {
+            return res.status(404).json({ success: false, error: "Player not found in database." });
+        }
+
+        const oldName = player.name;
+        const newName = name ? name.trim() : oldName;
+
+        // 3. Update the fields
+        player.name = newName;
+        if (nickname !== undefined) player.nickname = nickname.trim();
+        if (image !== undefined) player.image = image.trim();
+        if (squadImage !== undefined) player.squadImage = squadImage.trim();
+
+        const updatedPlayer = await player.save();
+
+        // 4. Cascade name change across tournaments & fixtures if name changed
+        if (oldName !== newName) {
+            const FixtureModel = mongoose.models.Fixture || mongoose.model('Fixture');
+            const StandingModel = mongoose.models.Standing || mongoose.model('Standing');
+
+            if (FixtureModel) {
+                await FixtureModel.updateMany({ playerA: oldName }, { $set: { playerA: newName } });
+                await FixtureModel.updateMany({ playerB: oldName }, { $set: { playerB: newName } });
+            }
+            if (StandingModel) {
+                await StandingModel.updateMany({ participant: oldName }, { $set: { participant: newName } });
+            }
+        }
+
+        res.json({
+            success: true,
+            message: "Profile updated successfully!",
+            player: updatedPlayer
+        });
+
+    } catch (err) {
+        console.error("Player Update Error:", err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
 const PORT = process.env.PORT || 5001;
 app.listen(PORT, () => console.log(`Auxiliary AI Node running on ${PORT}`));
