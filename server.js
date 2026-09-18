@@ -3,10 +3,17 @@ const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const MistralClient = require('@mistralai/mistralai').default;
+const SibApiV3Sdk = require('sib-api-v3-sdk');
+const bcrypt = require('bcryptjs');
 
 const app = express();
 app.use(cors({ origin: "*" }));
 app.use(express.json());
+
+const defaultClient = SibApiV3Sdk.ApiClient.instance;
+const apiKey = defaultClient.authentications['api-key'];
+apiKey.apiKey = process.env.BREVO_API_KEY; // Ensure this is in Render Env Vars
+const apiInstance = new SibApiV3Sdk.TransactionalEmailsApi();
 
 // --- CONNECT TO THE SAME DATABASE AS NODE-01 ---
 mongoose.connect(process.env.MONGO_URI);
@@ -47,11 +54,31 @@ const PlayerSchema = new mongoose.Schema({
     attributes: mongoose.Schema.Types.Mixed,
     googleId: { type: String, default: null, index: true },
     googleEmail: { type: String, default: null },
+    email: { 
+        type: String, 
+        default: null, 
+        lowercase: true, 
+        trim: true,
+        index: true 
+    },
+    password: { 
+        type: String, 
+        default: null 
+    },
     isClaimed: { type: Boolean, default: false },
     cachedScoutReport: String
 });
 const Player = mongoose.model('Player', PlayerSchema);
-
+// --- OTP VERIFICATION SCHEMA (Auto-expires in 10 minutes) ---
+const otpSchema = new mongoose.Schema({
+    email: { type: String, required: true, lowercase: true, trim: true },
+    otp: { type: String, required: true },
+    purpose: { type: String, enum: ['signup', 'signin'], required: true },
+    tempPasswordHash: String, // Kept temporarily during signup until OTP verified
+    tempPlayerId: String,     // Target player profile to claim
+    createdAt: { type: Date, default: Date.now, expires: 600 } // 10-minute TTL
+});
+const OtpVerification = mongoose.models.OtpVerification || mongoose.model('OtpVerification', otpSchema);
 // --- AI ROUTE 1: SUPPORT BOT ---
 app.post('/api/bot/groq-query', async (req, res) => {
     try {
@@ -895,6 +922,191 @@ app.put('/api/players/:id', async (req, res) => {
     } catch (err) {
         console.error("Player Update Error:", err);
         res.status(500).json({ success: false, error: err.message });
+    }
+});
+// --- HELPER: SEND OTP VIA BREVO API ---
+async function sendBrevoOtpEmail(toEmail, otpCode, purposeTitle) {
+    const sendSmtpEmail = new SibApiV3Sdk.SendSmtpEmail();
+    sendSmtpEmail.subject = `🔐 NEXUS LEGENDS CODE: ${otpCode}`;
+    sendSmtpEmail.htmlContent = `
+        <div style="font-family:sans-serif; background:#060b13; color:#ffffff; padding:30px; border-radius:18px; border:2px solid #00e5ff; max-width:440px; margin:auto;">
+            <h2 style="color:#00e5ff; margin-top:0; letter-spacing:2px;">NEXUS LEGENDS</h2>
+            <p style="color:#94a3b8; font-size:0.9rem;">Your 6-digit security code for <b>${purposeTitle}</b> is:</p>
+            <div style="background:#0e1726; border:1px solid #1e293b; padding:18px; text-align:center; border-radius:12px; margin:20px 0;">
+                <span style="font-size:2.2rem; font-weight:900; letter-spacing:8px; color:#10b981;">${otpCode}</span>
+            </div>
+            <p style="color:#64748b; font-size:0.75rem;">This code expires in 10 minutes. If you did not request this, please ignore this email.</p>
+        </div>
+    `;
+    sendSmtpEmail.sender = {
+        name: "NEXUS LEGENDS SECURITY",
+        email: process.env.BREVO_SENDER_EMAIL || "mysticfcmlegends@gmail.com"
+    };
+    sendSmtpEmail.to = [{ email: toEmail }];
+
+    return apiInstance.sendTransacEmail(sendSmtpEmail);
+}
+// ==========================================
+// 1. SIGN-UP: REQUEST OTP & CLAIM PROFILE
+// ==========================================
+app.post('/api/auth/email/signup-request', async (req, res) => {
+    try {
+        const { email, password, playerId } = req.body;
+
+        if (!email || !password || !playerId) {
+            return res.status(400).json({ error: "Email, password, and player profile are required." });
+        }
+
+        const cleanEmail = email.toLowerCase().trim();
+
+        // Check if email already used by any player
+        const emailTaken = await Player.findOne({ 
+            $or: [{ email: cleanEmail }, { googleEmail: cleanEmail }] 
+        });
+        if (emailTaken) {
+            return res.status(400).json({ error: "This email address is already registered. Please Sign In." });
+        }
+
+        // Check if player profile is already claimed
+        const targetPlayer = await Player.findById(playerId);
+        if (!targetPlayer) return res.status(404).json({ error: "Player profile not found." });
+        if (targetPlayer.isClaimed) {
+            return res.status(400).json({ error: "This player profile is already claimed by another user!" });
+        }
+
+        // Generate 6-digit numeric OTP
+        const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+        const hashedPassword = await bcrypt.hash(password, 10);
+
+        // Save temporary verification record (replaces any previous pending OTP for this email)
+        await OtpVerification.deleteMany({ email: cleanEmail });
+        await OtpVerification.create({
+            email: cleanEmail,
+            otp: otpCode,
+            purpose: 'signup',
+            tempPasswordHash: hashedPassword,
+            tempPlayerId: playerId
+        });
+
+        // Send OTP via Brevo
+        await sendBrevoOtpEmail(cleanEmail, otpCode, "Account Registration & Profile Claim");
+
+        res.json({ success: true, message: `OTP sent to ${cleanEmail}` });
+    } catch (err) {
+        console.error("Signup Request Error:", err);
+        res.status(500).json({ error: "Failed to dispatch verification email: " + err.message });
+    }
+});
+
+// ==========================================
+// 2. SIGN-UP: VERIFY OTP & FINALIZE ACCOUNT
+// ==========================================
+app.post('/api/auth/email/verify-signup', async (req, res) => {
+    try {
+        const { email, otp } = req.body;
+        const cleanEmail = email.toLowerCase().trim();
+
+        const record = await OtpVerification.findOne({ 
+            email: cleanEmail, 
+            otp: otp.trim(),
+            purpose: 'signup' 
+        });
+
+        if (!record) {
+            return res.status(400).json({ error: "Invalid or expired OTP code." });
+        }
+
+        // Lock player profile permanently
+        const player = await Player.findById(record.tempPlayerId);
+        if (!player) return res.status(404).json({ error: "Player profile not found." });
+
+        player.email = cleanEmail;
+        player.password = record.tempPasswordHash;
+        player.isClaimed = true;
+        await player.save();
+
+        // Delete used OTP
+        await OtpVerification.deleteMany({ email: cleanEmail });
+
+        res.json({
+            success: true,
+            message: `Account activated and locked to ${player.name}!`,
+            player: player
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ==========================================
+// 3. SIGN-IN: VERIFY CREDENTIALS & DISPATCH OTP
+// ==========================================
+app.post('/api/auth/email/signin-request', async (req, res) => {
+    try {
+        const { email, password } = req.body;
+        if (!email || !password) return res.status(400).json({ error: "Email and password required." });
+
+        const cleanEmail = email.toLowerCase().trim();
+
+        // Find claimed player with this email
+        const player = await Player.findOne({ email: cleanEmail });
+        if (!player || !player.password) {
+            return res.status(401).json({ error: "Account not found. Please Sign Up first." });
+        }
+
+        // Verify password
+        const isMatch = await bcrypt.compare(password, player.password);
+        if (!isMatch) {
+            return res.status(401).json({ error: "Incorrect password." });
+        }
+
+        // Generate 6-digit OTP
+        const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+
+        await OtpVerification.deleteMany({ email: cleanEmail });
+        await OtpVerification.create({
+            email: cleanEmail,
+            otp: otpCode,
+            purpose: 'signin'
+        });
+
+        // Send OTP via Brevo
+        await sendBrevoOtpEmail(cleanEmail, otpCode, "Sign-In Two-Factor Authentication");
+
+        res.json({ success: true, message: `Security OTP sent to ${cleanEmail}` });
+    } catch (err) {
+        res.status(500).json({ error: "Sign-in error: " + err.message });
+    }
+});
+
+// ==========================================
+// 4. SIGN-IN: VERIFY OTP & COMPLETE LOGIN
+// ==========================================
+app.post('/api/auth/email/verify-signin', async (req, res) => {
+    try {
+        const { email, otp } = req.body;
+        const cleanEmail = email.toLowerCase().trim();
+
+        const record = await OtpVerification.findOne({ 
+            email: cleanEmail, 
+            otp: otp.trim(),
+            purpose: 'signin' 
+        });
+
+        if (!record) {
+            return res.status(400).json({ error: "Invalid or expired OTP code." });
+        }
+
+        const player = await Player.findOne({ email: cleanEmail });
+        await OtpVerification.deleteMany({ email: cleanEmail });
+
+        res.json({
+            success: true,
+            message: "Login verified successfully!",
+            player: player
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
 });
 const PORT = process.env.PORT || 5001;
