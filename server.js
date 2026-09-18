@@ -867,58 +867,67 @@ app.put('/api/admin/players/:id/unlink-auth', async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
-// --- UPDATE PLAYER PROFILE (DASHBOARD & SELF-UPDATE) ---
+// --- UPDATE PLAYER PROFILE (FAIL-SAFE DIRECT DB SYNC) ---
 app.put('/api/players/:id', async (req, res) => {
     try {
         const { id } = req.params;
 
-        // 1. Validate MongoDB ObjectId to prevent CastError crashes
-        if (!id || id === "undefined" || id === "null" || !mongoose.Types.ObjectId.isValid(id)) {
-            return res.status(400).json({ 
-                success: false, 
-                error: "Invalid or missing Player ID in session. Please re-login." 
-            });
+        if (!id || !mongoose.Types.ObjectId.isValid(id)) {
+            return res.status(400).json({ success: false, error: "Invalid Player ID format" });
         }
 
         const { name, nickname, image, squadImage } = req.body;
 
-        // 2. Find existing player
+        // 1. Find existing player
         const player = await Player.findById(id);
         if (!player) {
-            return res.status(404).json({ success: false, error: "Player not found in database." });
+            return res.status(404).json({ success: false, error: "Player not found" });
         }
 
-        // Inside app.put('/api/players/:id', ...)
         const oldName = player.name;
         const newName = name ? name.trim() : oldName;
 
-        // Save new name to Player document
+        // 2. Save new values to Player
         player.name = newName;
         if (nickname !== undefined) player.nickname = nickname.trim();
         if (image !== undefined) player.image = image.trim();
         if (squadImage !== undefined) player.squadImage = squadImage.trim();
-        await player.save();
+        const updatedPlayer = await player.save();
 
-        // 👉 AUTOMATIC CASCADE IF NAME CHANGED:
+        // 3. Cascade name change across all collections using direct MongoDB driver
+        // (This NEVER throws MissingSchemaError)
         if (oldName && newName && oldName.toLowerCase() !== newName.toLowerCase()) {
+            console.log(`[Cascade] Renaming history: "${oldName}" -> "${newName}"`);
+
             const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
             const oldRegex = new RegExp('^' + escapeRegex(oldName.trim()) + '$', 'i');
 
-            const FixtureModel = mongoose.models.Fixture || mongoose.model('Fixture');
-            const StandingModel = mongoose.models.Standing || mongoose.model('Standing');
+            const db = mongoose.connection.db;
 
-            if (FixtureModel) {
-                await FixtureModel.updateMany({ playerA: oldRegex }, { $set: { playerA: newName } });
-                await FixtureModel.updateMany({ playerB: oldRegex }, { $set: { playerB: newName } });
+            // A. Update in Fixtures
+            await db.collection('fixtures').updateMany({ playerA: oldRegex }, { $set: { playerA: newName } });
+            await db.collection('fixtures').updateMany({ playerB: oldRegex }, { $set: { playerB: newName } });
+
+            // B. Update in Standings
+            await db.collection('standings').updateMany({ participant: oldRegex }, { $set: { participant: newName } });
+
+            // C. Update in Tournaments participant arrays
+            const tours = await db.collection('tournaments').find({ participants: oldRegex }).toArray();
+            for (let t of tours) {
+                const newParticipants = t.participants.map(p => oldRegex.test(p) ? newName : p);
+                await db.collection('tournaments').updateOne({ _id: t._id }, { $set: { participants: newParticipants } });
             }
-            if (StandingModel) {
-                await StandingModel.updateMany({ participant: oldRegex }, { $set: { participant: newName } });
-            }
+
+            // D. Update in Legacy SoloFixtures (if exists)
+            try {
+                await db.collection('solofixtures').updateMany({ playerA: oldRegex }, { $set: { playerA: newName } });
+                await db.collection('solofixtures').updateMany({ playerB: oldRegex }, { $set: { playerB: newName } });
+            } catch (e) {}
         }
 
         res.json({
             success: true,
-            message: "Profile updated successfully!",
+            message: "Profile and all match records updated successfully!",
             player: updatedPlayer
         });
 
