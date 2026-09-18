@@ -1121,59 +1121,33 @@ app.post('/api/auth/email/verify-signin', async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
-// --- EMERGENCY REPAIR: RE-LINK ALL PAST MATCHES FROM OLD NAME TO NEW NAME ---
+// --- REPAIR MATCH HISTORY (DIRECT DB ACCESS) ---
 app.get('/api/players/repair-history', async (req, res) => {
     try {
         const { oldName, newName } = req.query;
-
-        if (!oldName || !newName) {
-            return res.status(400).json({ error: "Please provide both oldName and newName query parameters." });
-        }
+        if (!oldName || !newName) return res.status(400).json({ error: "Missing names" });
 
         const cleanOld = oldName.trim();
         const cleanNew = newName.trim();
         const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const oldRegex = new RegExp('^' + escapeRegex(cleanOld) + '$', 'i');
 
-        const FixtureModel = mongoose.models.Fixture || mongoose.model('Fixture');
-        const StandingModel = mongoose.models.Standing || mongoose.model('Standing');
-        const TournamentModel = mongoose.models.Tournament || mongoose.model('Tournament');
-        const TourRankModel = mongoose.models.TourRank || mongoose.model('TourRank');
+        const db = mongoose.connection.db;
 
-        // 1. Update all Fixtures (Player A & Player B)
-        const fixA = await FixtureModel.updateMany({ playerA: oldRegex }, { $set: { playerA: cleanNew } });
-        const fixB = await FixtureModel.updateMany({ playerB: oldRegex }, { $set: { playerB: cleanNew } });
+        const resA = await db.collection('fixtures').updateMany({ playerA: oldRegex }, { $set: { playerA: cleanNew } });
+        const resB = await db.collection('fixtures').updateMany({ playerB: oldRegex }, { $set: { playerB: cleanNew } });
+        const resS = await db.collection('standings').updateMany({ participant: oldRegex }, { $set: { participant: cleanNew } });
 
-        // 2. Update Legacy SoloFixtures (if any)
-        let legacyCount = 0;
-        if (mongoose.models.SoloFixture) {
-            const sA = await mongoose.models.SoloFixture.updateMany({ playerA: oldRegex }, { $set: { playerA: cleanNew } });
-            const sB = await mongoose.models.SoloFixture.updateMany({ playerB: oldRegex }, { $set: { playerB: cleanNew } });
-            legacyCount = sA.modifiedCount + sB.modifiedCount;
-        }
-
-        // 3. Update Standings (Points Table)
-        const stand = await StandingModel.updateMany({ participant: oldRegex }, { $set: { participant: cleanNew } });
-
-        // 4. Update Tournament Participant lists
-        const tours = await TournamentModel.find({ participants: oldRegex });
-        for (let t of tours) {
-            t.participants = t.participants.map(p => oldRegex.test(p) ? cleanNew : p);
-            await t.save();
-        }
-
-        // 5. Update Rankings (Golden Boot / Ratings)
-        if (TourRankModel) {
-            await TourRankModel.updateMany({ playerName: oldRegex }, { $set: { playerName: cleanNew } });
-        }
+        try {
+            await db.collection('solofixtures').updateMany({ playerA: oldRegex }, { $set: { playerA: cleanNew } });
+            await db.collection('solofixtures').updateMany({ playerB: oldRegex }, { $set: { playerB: cleanNew } });
+        } catch(e) {}
 
         res.json({
             success: true,
-            message: `Successfully re-linked matches! Updated ${fixA.modifiedCount + fixB.modifiedCount} matches and ${stand.modifiedCount} table records from "${cleanOld}" to "${cleanNew}".`
+            message: `Re-linked matches! Updated ${resA.modifiedCount + resB.modifiedCount} fixtures and ${resS.modifiedCount} standings from "${cleanOld}" to "${cleanNew}".`
         });
-
     } catch (err) {
-        console.error("Repair Error:", err);
         res.status(500).json({ error: err.message });
     }
 });
