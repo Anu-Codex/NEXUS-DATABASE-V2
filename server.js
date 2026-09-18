@@ -1151,5 +1151,16 @@ app.get('/api/players/repair-history', async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
+// --- GET ALL PLAYERS (Required for Sign-up Dropdown & Homepage) ---
+app.get('/api/players', async (req, res) => {
+    try {
+        const PlayerModel = mongoose.models.Player || mongoose.model('Player');
+        const players = await PlayerModel.find().sort({ name: 1 });
+        res.json(players);
+    } catch (err) {
+        console.error("Fetch Players Error:", err);
+        res.status(500).json({ error: err.message });
+    }
+});
 const PORT = process.env.PORT || 5001;
 app.listen(PORT, () => console.log(`Auxiliary AI Node running on ${PORT}`));
